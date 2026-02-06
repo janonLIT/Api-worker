@@ -1,0 +1,1 @@
+{"name": "openai-nim-proxy","version": "1.0.0","description": "OpenAI to NVIDIA NIM API proxy for Cloudflare Workers","main": "worker.js","scripts": {"deploy": "wrangler deploy"},"keywords": ["cloudflare", "worker", "nvidia", "openai", "proxy"],"author": "Your Name","license": "MIT"}
