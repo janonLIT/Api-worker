@@ -133,11 +133,12 @@ export default {
         }
 
         if (stream) {
-          // Handle streaming with reasoning
+          // Handle streaming with reasoning - FIXED VERSION
           const { readable, writable } = new TransformStream();
           const writer = writable.getWriter();
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
+          const encoder = new TextEncoder();
           
           let buffer = '';
           let reasoningStarted = false;
@@ -146,21 +147,43 @@ export default {
             try {
               while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+                
+                if (done) {
+                  // Process any remaining data in buffer
+                  if (buffer.trim().length > 0) {
+                    const remainingLines = buffer.split('\n');
+                    for (const line of remainingLines) {
+                      if (line.trim().startsWith('data: ') && !line.includes('[DONE]')) {
+                        try {
+                          await writer.write(encoder.encode(line + '\n\n'));
+                        } catch (e) {
+                          console.error('Error writing remaining buffer:', e);
+                        }
+                      }
+                    }
+                  }
+                  // Send final [DONE] marker
+                  await writer.write(encoder.encode('data: [DONE]\n\n'));
+                  break;
+                }
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+                buffer = lines.pop() || ''; // Keep last incomplete line in buffer
 
                 for (const line of lines) {
+                  if (!line.trim()) continue; // Skip empty lines
+                  
                   if (line.startsWith('data: ')) {
                     if (line.includes('[DONE]')) {
-                      await writer.write(new TextEncoder().encode(line + '\n\n'));
+                      await writer.write(encoder.encode(line + '\n\n'));
                       continue;
                     }
 
                     try {
-                      const data = JSON.parse(line.slice(6));
+                      const jsonStr = line.slice(6); // Remove 'data: ' prefix
+                      const data = JSON.parse(jsonStr);
+                      
                       if (data.choices?.[0]?.delta) {
                         const reasoning = data.choices[0].delta.reasoning_content;
                         const content = data.choices[0].delta.content;
@@ -176,7 +199,7 @@ export default {
                           }
 
                           if (content && reasoningStarted) {
-                            combinedContent += '</think>\n\n' + content;
+                            combinedContent += '\n</think>\n\n' + content;
                             reasoningStarted = false;
                           } else if (content) {
                             combinedContent += content;
@@ -187,6 +210,7 @@ export default {
                             delete data.choices[0].delta.reasoning_content;
                           }
                         } else {
+                          // When not showing reasoning, just pass content
                           if (content) {
                             data.choices[0].delta.content = content;
                           } else {
@@ -195,15 +219,32 @@ export default {
                           delete data.choices[0].delta.reasoning_content;
                         }
                       }
-                      await writer.write(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
+                      
+                      await writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+                      
                     } catch (e) {
-                      await writer.write(new TextEncoder().encode(line + '\n\n'));
+                      // If JSON parsing fails, pass line through as-is
+                      console.error('JSON parse error:', e);
+                      await writer.write(encoder.encode(line + '\n\n'));
                     }
                   }
                 }
               }
+            } catch (error) {
+              console.error('Streaming error:', error);
+              // Try to send error to client
+              try {
+                await writer.write(encoder.encode(`data: {"error": "${error.message}"}\n\n`));
+                await writer.write(encoder.encode('data: [DONE]\n\n'));
+              } catch (e) {
+                console.error('Error writing error message:', e);
+              }
             } finally {
-              await writer.close();
+              try {
+                await writer.close();
+              } catch (e) {
+                console.error('Error closing writer:', e);
+              }
             }
           })();
 
@@ -215,7 +256,8 @@ export default {
               'Connection': 'keep-alive'
             }
           });
-        } else {
+          }
+           else {
           // Handle non-streaming with reasoning
           const data = await response.json();
           
